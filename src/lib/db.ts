@@ -1,18 +1,26 @@
 import { DatabaseSync } from 'node:sqlite';
+import fs from 'fs';
 import path from 'path';
 import { DEFAULT_CATEGORIES, PAYMENT_METHODS } from './constants';
 
-const DB_PATH = path.join(process.cwd(), 'spendsense.db');
+const SOURCE_DB_PATH = path.join(process.cwd(), 'spendsense.db');
+const RUNTIME_DB_PATH = path.join('/tmp', 'spendsense.db');
 
 let dbInstance: DatabaseSync | null = null;
 
 export function getDb(): DatabaseSync {
   if (!dbInstance) {
-    dbInstance = new DatabaseSync(DB_PATH);
+    if (!fs.existsSync(RUNTIME_DB_PATH)) {
+      fs.copyFileSync(SOURCE_DB_PATH, RUNTIME_DB_PATH);
+    }
+
+    dbInstance = new DatabaseSync(RUNTIME_DB_PATH);
+
     dbInstance.exec('PRAGMA journal_mode = WAL;');
     dbInstance.exec('PRAGMA foreign_keys = ON;');
     initTables(dbInstance);
   }
+
   return dbInstance;
 }
 
