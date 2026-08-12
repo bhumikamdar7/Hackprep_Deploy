@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+
+# Environment
+.env
+.env.local
+
+# SQLite database
+*.db
+*.db-shm
+*.db-wal
+
+# BMAD
+_bmad/
+_bmad-output/
+.claude/
+
+# OS
+.DS_Store
