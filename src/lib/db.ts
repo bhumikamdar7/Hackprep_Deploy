@@ -4,8 +4,10 @@ import path from 'path';
 import { DEFAULT_CATEGORIES, PAYMENT_METHODS } from './constants';
 
 const SOURCE_DB_PATH = path.join(process.cwd(), 'spendsense.db');
-const RUNTIME_DB_PATH = path.join('/tmp', 'spendsense.db');
-
+const RUNTIME_DB_PATH = path.join(
+  process.env.NODE_ENV === 'production' ? '/tmp' : process.cwd(),
+  'spendsense-runtime.db'
+);
 let dbInstance: DatabaseSync | null = null;
 
 export function getDb(): DatabaseSync {

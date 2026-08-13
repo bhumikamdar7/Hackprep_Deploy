@@ -1,8 +1,10 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { createClient } from '@/lib/supabase-browser';
 import { TimePeriod } from '@/types';
-import { Plus, Calendar, Database, CheckCircle2 } from 'lucide-react';
+import { Plus, Calendar, Database, CheckCircle2, LogOut } from 'lucide-react';
 
 interface HeaderProps {
   onAddTransaction: () => void;
@@ -12,8 +14,18 @@ interface HeaderProps {
 }
 
 export default function Header({ onAddTransaction, period = 'monthly', onPeriodChange, onRefreshData }: HeaderProps) {
+  const router = useRouter();
   const [seeding, setSeeding] = useState(false);
   const [seedMsg, setSeedMsg] = useState<string | null>(null);
+
+  const handleSignOut = async () => {
+    const supabase = createClient();
+
+    await supabase.auth.signOut();
+
+    router.replace('/login');
+    router.refresh();
+  };
 
   const handleSeedDemoData = async () => {
     try {
@@ -59,6 +71,14 @@ export default function Header({ onAddTransaction, period = 'monthly', onPeriodC
         >
           <Database className={`w-3.5 h-3.5 text-[#6F8F7A] ${seeding ? 'animate-spin' : ''}`} />
           {seeding ? 'Seeding...' : 'Seed Demo Data'}
+        </button>
+        <button
+          onClick={handleSignOut}
+          className="btn-secondary"
+          title="Sign out of SpendSense"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          Sign Out
         </button>
 
         {/* Time-Period Filter Dropdown */}
