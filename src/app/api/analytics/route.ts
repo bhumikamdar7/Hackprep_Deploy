@@ -149,7 +149,7 @@ export async function GET(request: NextRequest) {
       return item;
     });
 
-    const remainingBudget = Math.max(0, totalBudgeted - totalSpentInBudgets);
+    const remainingBudget = Math.max(0, totalIncome - totalExpenses);
     const budgetUsagePercentage = totalBudgeted > 0 ? Math.round((totalSpentInBudgets / totalBudgeted) * 100) : 0;
 
     return NextResponse.json({
