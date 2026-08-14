@@ -1,4 +1,5 @@
 'use client';
+import { createClient } from '@/lib/supabase-browser';
 import { useState, useEffect, useCallback } from 'react';
 import Header from '@/components/Header';
 import StatCard from '@/components/StatCard';
@@ -19,7 +20,9 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 
+const supabase = createClient();
 export default function DashboardPage() {
+
   const [period, setPeriod] = useState<TimePeriod>('monthly');
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -62,7 +65,23 @@ export default function DashboardPage() {
   }, [period]);
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+
+    async function loadDashboard() {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user || cancelled) return;
+
+      await fetchData();
+    }
+
+    loadDashboard();
+
+    return () => {
+      cancelled = true;
+    };
   }, [fetchData]);
 
   const handleEdit = (tx: Transaction) => {
