@@ -2,10 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { Transaction, TimePeriod } from '@/types';
 import { getPeriodFilter } from '@/lib/period';
+import { getAuthenticatedUser } from '@/lib/supabase-server';
 
 export async function GET(request: NextRequest) {
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const { searchParams } = new URL(request.url);
+
     const periodParam = (searchParams.get('period') || 'monthly') as TimePeriod;
     const periodFilter = getPeriodFilter(periodParam);
 
@@ -14,14 +21,14 @@ export async function GET(request: NextRequest) {
 
     // 1. Period-Filtered Income
     const incomeRow = db
-      .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'income' AND ${periodFilter.whereClause}`)
-      .get() as { total: number };
+      .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND type = 'income' AND ${periodFilter.whereClause}`)
+      .get(user.id) as { total: number };
     const totalIncome = incomeRow?.total || 0;
 
     // 2. Period-Filtered Expenses
     const expenseRow = db
-      .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'expense' AND ${periodFilter.whereClause}`)
-      .get() as { total: number };
+      .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND type = 'expense' AND ${periodFilter.whereClause}`)
+      .get(user.id) as { total: number };
     const totalExpenses = expenseRow?.total || 0;
 
     // 3. Current Balance
@@ -32,9 +39,9 @@ export async function GET(request: NextRequest) {
       .prepare(`
         SELECT COALESCE(SUM(amount), 0) as total 
         FROM transactions 
-        WHERE type = 'expense' AND strftime('%Y-%m', date) = ?
+        WHERE user_id = ? AND type = 'expense' AND strftime('%Y-%m', date) = ?
       `)
-      .get(currentMonth) as { total: number };
+      .get(user.id, currentMonth) as { total: number };
     const monthlySpending = monthlySpendingRow?.total || 0;
 
     // 5. Savings Rate (%) = ((Income - Expenses) / Income) * 100
@@ -42,14 +49,14 @@ export async function GET(request: NextRequest) {
 
     // 6. Average Spending
     const avgRow = db
-      .prepare(`SELECT COALESCE(AVG(amount), 0) as avgSpend FROM transactions WHERE type = 'expense' AND ${periodFilter.whereClause}`)
-      .get() as { avgSpend: number };
+      .prepare(`SELECT COALESCE(AVG(amount), 0) as avgSpend FROM transactions WHERE user_id = ? AND type = 'expense' AND ${periodFilter.whereClause}`)
+      .get(user.id) as { avgSpend: number };
     const averageSpending = Math.round((avgRow?.avgSpend || 0) * 100) / 100;
 
     // 7. Largest Transaction in Period
     const largestTx = db
-      .prepare(`SELECT * FROM transactions WHERE type = 'expense' AND ${periodFilter.whereClause} ORDER BY amount DESC LIMIT 1`)
-      .get() as Transaction | undefined;
+      .prepare(`SELECT * FROM transactions WHERE user_id = ? AND type = 'expense' AND ${periodFilter.whereClause} ORDER BY amount DESC LIMIT 1`)
+      .get(user.id) as Transaction | undefined;
 
     // 8. Spending by Category (Real SQLite SUM query for selected period)
     const categoryRows = db
@@ -59,11 +66,11 @@ export async function GET(request: NextRequest) {
           SUM(amount) as total,
           COUNT(*) as count
         FROM transactions 
-        WHERE type = 'expense' AND ${periodFilter.whereClause}
+        WHERE user_id = ? AND type = 'expense' AND ${periodFilter.whereClause}
         GROUP BY category 
         ORDER BY total DESC
       `)
-      .all() as Array<{ category: string; total: number; count: number }>;
+      .all(user.id) as Array<{ category: string; total: number; count: number }>;
 
     const categoryBreakdown = categoryRows.map((cat) => ({
       category: cat.category,
@@ -85,11 +92,12 @@ export async function GET(request: NextRequest) {
           SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income,
           SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expense
         FROM transactions
+        WHERE user_id = ?
         GROUP BY strftime('%Y-%m', date)
         ORDER BY month ASC
         LIMIT 6
       `)
-      .all() as Array<{ month: string; income: number; expense: number }>;
+      .all(user.id) as Array<{ month: string; income: number; expense: number }>;
 
     const monthlyBreakdown = monthlyRows.map((m) => ({
       month: m.month,
@@ -108,13 +116,15 @@ export async function GET(request: NextRequest) {
         FROM budgets b
         LEFT JOIN transactions t 
           ON b.category = t.category 
+          AND t.user_id = b.user_id
           AND t.type = 'expense'
           AND strftime('%Y-%m', t.date) = b.month
-        WHERE b.month = ?
+        WHERE b.user_id = ? AND b.month = ?
         GROUP BY b.id, b.category, b.amount
         ORDER BY spentAmount DESC
       `)
-      .all(currentMonth) as Array<{ category: string; budgetAmount: number; spentAmount: number }>;
+      .all(user.id, currentMonth) as Array<{ category: string; budgetAmount: number; spentAmount: number }>;
+
 
     let totalBudgeted = 0;
     let totalSpentInBudgets = 0;

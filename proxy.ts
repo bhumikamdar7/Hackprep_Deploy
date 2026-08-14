@@ -3,7 +3,9 @@ import { NextResponse, type NextRequest } from 'next/server';
 
 export async function proxy(request: NextRequest) {
     let response = NextResponse.next({
-        request,
+        request: {
+            headers: request.headers,
+        },
     });
 
     const supabase = createServerClient(
@@ -15,10 +17,15 @@ export async function proxy(request: NextRequest) {
                     return request.cookies.getAll();
                 },
                 setAll(cookiesToSet) {
-                    cookiesToSet.forEach(({ name, value, options }) => {
-                        request.cookies.set(name, value);
-                        response.cookies.set(name, value, options);
+                    cookiesToSet.forEach(({ name, value }) =>
+                        request.cookies.set(name, value)
+                    );
+                    response = NextResponse.next({
+                        request,
                     });
+                    cookiesToSet.forEach(({ name, value, options }) =>
+                        response.cookies.set(name, value, options)
+                    );
                 },
             },
         }
@@ -36,19 +43,39 @@ export async function proxy(request: NextRequest) {
         pathname.startsWith('/login/') ||
         pathname.startsWith('/signup/');
 
-    if (!user && !isPublicPath) {
-        return NextResponse.redirect(new URL('/login', request.url));
+    if (!user) {
+        if (isPublicPath) {
+            return response;
+        }
+
+        if (pathname.startsWith('/api/')) {
+            return NextResponse.json(
+                { error: 'Unauthorized' },
+                { status: 401 }
+            );
+        }
+
+        const redirectResponse = NextResponse.redirect(new URL('/login', request.url));
+        response.cookies.getAll().forEach((cookie) => {
+            redirectResponse.cookies.set(cookie.name, cookie.value);
+        });
+        return redirectResponse;
     }
 
     if (user && isPublicPath) {
-        return NextResponse.redirect(new URL('/', request.url));
+        const redirectResponse = NextResponse.redirect(new URL('/', request.url));
+        response.cookies.getAll().forEach((cookie) => {
+            redirectResponse.cookies.set(cookie.name, cookie.value);
+        });
+        return redirectResponse;
     }
 
     return response;
+
 }
 
 export const config = {
     matcher: [
-        '/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+        '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
     ],
-};
+};

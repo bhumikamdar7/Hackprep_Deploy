@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { PAYMENT_METHODS } from '@/lib/constants';
+import { getAuthenticatedUser } from '@/lib/supabase-server';
 
 // GET /api/transactions
 export async function GET(request: NextRequest) {
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const db = getDb();
     const { searchParams } = new URL(request.url);
     const search = searchParams.get('search') || '';
@@ -15,8 +21,8 @@ export async function GET(request: NextRequest) {
     const endDate = searchParams.get('endDate') || '';
     const limit = parseInt(searchParams.get('limit') || '500', 10);
 
-    let query = 'SELECT * FROM transactions WHERE 1=1';
-    const params: any[] = [];
+    let query = 'SELECT * FROM transactions WHERE user_id = ?';
+    const params: any[] = [user.id];
 
     if (search) {
       query += ' AND (description LIKE ? OR category LIKE ?)';
@@ -66,7 +72,13 @@ export async function GET(request: NextRequest) {
 // POST /api/transactions
 export async function POST(request: NextRequest) {
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const body = await request.json();
+
     const { amount, category, description, date, type, payment_method } = body;
 
     // Strict Validations
@@ -93,17 +105,18 @@ export async function POST(request: NextRequest) {
 
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT INTO transactions (amount, category, description, date, type, payment_method)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO transactions (user_id, amount, category, description, date, type, payment_method)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const info = stmt.run(amount, category.trim(), description.trim(), date, type, method);
+    const info = stmt.run(user.id, amount, category.trim(), description.trim(), date, type, method);
 
     const createdTx = db
-      .prepare('SELECT * FROM transactions WHERE id = ?')
-      .get(info.lastInsertRowid);
+      .prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?')
+      .get(info.lastInsertRowid, user.id);
 
     return NextResponse.json({ transaction: createdTx, success: true }, { status: 201 });
+
   } catch (error: any) {
     return NextResponse.json(
       { error: 'Failed to create transaction', details: error.message },

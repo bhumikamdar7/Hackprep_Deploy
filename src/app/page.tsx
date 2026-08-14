@@ -1,7 +1,5 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase-browser';
 import Header from '@/components/Header';
 import StatCard from '@/components/StatCard';
 import CategoryDonutChart from '@/components/CategoryDonutChart';
@@ -22,20 +20,6 @@ import {
 import Link from 'next/link';
 
 export default function DashboardPage() {
-  const router = useRouter();
-  const [authChecked, setAuthChecked] = useState(false);
-
-  useEffect(() => {
-    const supabase = createClient();
-
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) {
-        router.replace('/login');
-      } else {
-        setAuthChecked(true);
-      }
-    });
-  }, [router]);
   const [period, setPeriod] = useState<TimePeriod>('monthly');
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -98,11 +82,6 @@ export default function DashboardPage() {
     }
   };
 
-  if (!authChecked) {
-    return (
-      <main className="min-h-screen bg-[#F7F5F2]" />
-    );
-  }
 
   return (
     <div className="flex-1 flex flex-col min-h-screen bg-[#F7F5F2]">

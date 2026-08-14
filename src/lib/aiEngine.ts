@@ -4,21 +4,21 @@ import { formatINR } from './formatters';
 import { getPeriodFilter } from './period';
 
 // Helper to gather complete verified SQLite financial context
-export function getFinancialContext(period: TimePeriod = 'monthly') {
+export function getFinancialContext(userId: string, period: TimePeriod = 'monthly') {
   const db = getDb();
   const periodFilter = getPeriodFilter(period);
   const currentMonth = new Date().toISOString().slice(0, 7);
 
   // 1. Total Income
   const incRow = db
-    .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE type = 'income' AND ${periodFilter.whereClause}`)
-    .get() as { total: number };
+    .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND type = 'income' AND ${periodFilter.whereClause}`)
+    .get(userId) as { total: number };
   const totalIncome = incRow?.total || 0;
 
   // 2. Total Expenses & Count
   const expRow = db
-    .prepare(`SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count FROM transactions WHERE type = 'expense' AND ${periodFilter.whereClause}`)
-    .get() as { total: number; count: number };
+    .prepare(`SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count FROM transactions WHERE user_id = ? AND type = 'expense' AND ${periodFilter.whereClause}`)
+    .get(userId) as { total: number; count: number };
   const totalExpenses = expRow?.total || 0;
   const txCount = expRow?.count || 0;
 
@@ -27,11 +27,11 @@ export function getFinancialContext(period: TimePeriod = 'monthly') {
     .prepare(`
       SELECT category, SUM(amount) as total, COUNT(*) as count
       FROM transactions
-      WHERE type = 'expense' AND ${periodFilter.whereClause}
+      WHERE user_id = ? AND type = 'expense' AND ${periodFilter.whereClause}
       GROUP BY category
       ORDER BY total DESC
     `)
-    .all() as Array<{ category: string; total: number; count: number }>;
+    .all(userId) as Array<{ category: string; total: number; count: number }>;
 
   const categoryBreakdown = catRows.map((c) => ({
     category: c.category,
@@ -45,11 +45,11 @@ export function getFinancialContext(period: TimePeriod = 'monthly') {
     .prepare(`
       SELECT id, amount, category, description, date, payment_method
       FROM transactions
-      WHERE type = 'expense' AND ${periodFilter.whereClause}
+      WHERE user_id = ? AND type = 'expense' AND ${periodFilter.whereClause}
       ORDER BY amount DESC
       LIMIT 5
     `)
-    .all() as Array<{ id: number; amount: number; category: string; description: string; date: string; payment_method: string }>;
+    .all(userId) as Array<{ id: number; amount: number; category: string; description: string; date: string; payment_method: string }>;
 
   // 5. Active Budget Progress
   const budgetRows = db
@@ -61,12 +61,13 @@ export function getFinancialContext(period: TimePeriod = 'monthly') {
       FROM budgets b
       LEFT JOIN transactions t 
         ON b.category = t.category 
+        AND t.user_id = b.user_id
         AND t.type = 'expense'
         AND strftime('%Y-%m', t.date) = b.month
-      WHERE b.month = ?
+      WHERE b.user_id = ? AND b.month = ?
       GROUP BY b.id, b.category, b.amount
     `)
-    .all(currentMonth) as Array<{ category: string; budgetAmount: number; spentAmount: number }>;
+    .all(userId, currentMonth) as Array<{ category: string; budgetAmount: number; spentAmount: number }>;
 
   const budgets = budgetRows.map((b) => ({
     category: b.category,
@@ -84,11 +85,12 @@ export function getFinancialContext(period: TimePeriod = 'monthly') {
         SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income,
         SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expense
       FROM transactions
+      WHERE user_id = ?
       GROUP BY strftime('%Y-%m', date)
       ORDER BY month DESC
       LIMIT 3
     `)
-    .all() as Array<{ month: string; income: number; expense: number }>;
+    .all(userId) as Array<{ month: string; income: number; expense: number }>;
 
   return {
     periodLabel: periodFilter.label,
@@ -106,8 +108,8 @@ export function getFinancialContext(period: TimePeriod = 'monthly') {
 }
 
 // Generate the 6 Dynamic Cards via LLM
-export async function generateAICards(period: TimePeriod = 'monthly'): Promise<AICardInsights> {
-  const ctx = getFinancialContext(period);
+export async function generateAICards(userId: string, period: TimePeriod = 'monthly'): Promise<AICardInsights> {
+  const ctx = getFinancialContext(userId, period);
 
   const fallbackCards: AICardInsights = {
     spendingSummary: `For ${ctx.periodLabel}, total expenses stand at **${formatINR(ctx.totalExpenses)}** across ${ctx.txCount} transactions against recorded income of **${formatINR(ctx.totalIncome)}**. Net balance: **${formatINR(ctx.netCashflow)}**.`,
@@ -223,9 +225,11 @@ CRITICAL INSTRUCTIONS:
 export async function processChatbotQuery(
   userQuery: string,
   history: ChatMessage[],
+  userId: string,
   period: TimePeriod = 'monthly'
 ): Promise<string> {
-  const ctx = getFinancialContext(period);
+  const ctx = getFinancialContext(userId, period);
+
 
   const apiKey = process.env.AI_API_KEY;
 

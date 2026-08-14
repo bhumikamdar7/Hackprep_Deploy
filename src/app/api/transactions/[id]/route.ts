@@ -1,17 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { PAYMENT_METHODS } from '@/lib/constants';
+import { getAuthenticatedUser } from '@/lib/supabase-server';
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const { id } = await params;
     const db = getDb();
     const transaction = db
-      .prepare('SELECT * FROM transactions WHERE id = ?')
-      .get(id);
+      .prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?')
+      .get(id, user.id);
 
     if (!transaction) {
       return NextResponse.json({ error: 'Transaction not found' }, { status: 404 });
@@ -31,6 +37,11 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const { id } = await params;
     const body = await request.json();
     const { amount, category, description, date, type, payment_method } = body;
@@ -60,18 +71,18 @@ export async function PUT(
     const stmt = db.prepare(`
       UPDATE transactions
       SET amount = ?, category = ?, description = ?, date = ?, type = ?, payment_method = ?
-      WHERE id = ?
+      WHERE id = ? AND user_id = ?
     `);
 
-    const result = stmt.run(amount, category.trim(), description.trim(), date, type, method, id);
+    const result = stmt.run(amount, category.trim(), description.trim(), date, type, method, id, user.id);
 
     if (result.changes === 0) {
       return NextResponse.json({ error: 'Transaction not found' }, { status: 404 });
     }
 
     const updatedTx = db
-      .prepare('SELECT * FROM transactions WHERE id = ?')
-      .get(id);
+      .prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?')
+      .get(id, user.id);
 
     return NextResponse.json({ transaction: updatedTx, success: true });
   } catch (error: any) {
@@ -87,9 +98,14 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const { id } = await params;
     const db = getDb();
-    const result = db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
+    const result = db.prepare('DELETE FROM transactions WHERE id = ? AND user_id = ?').run(id, user.id);
 
     if (result.changes === 0) {
       return NextResponse.json({ error: 'Transaction not found' }, { status: 404 });
@@ -103,3 +119,5 @@ export async function DELETE(
     );
   }
 }
+
+

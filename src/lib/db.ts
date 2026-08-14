@@ -28,18 +28,32 @@ export function getDb(): DatabaseSync {
 
 export { DEFAULT_CATEGORIES, PAYMENT_METHODS };
 
+function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string) {
+  try {
+    const info = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!info.some((col) => col.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+      console.log(`[db] Migration: Added column ${column} to ${table}`);
+    }
+  } catch (err) {
+    console.error(`[db] Migration error adding ${column} to ${table}:`, err);
+  }
+}
+
 function initTables(db: DatabaseSync) {
-  // Categories Table
+  // ─── Categories Table ────────────────────────────────────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS categories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      user_id TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  addColumnIfMissing(db, 'categories', 'user_id', 'TEXT');
 
-  // Seed default Indian categories if empty
-  const countStmt = db.prepare('SELECT COUNT(*) as count FROM categories');
+  // Seed default Indian categories (shared, user_id IS NULL)
+  const countStmt = db.prepare('SELECT COUNT(*) as count FROM categories WHERE user_id IS NULL');
   const result = countStmt.get() as { count: number };
   if (!result || result.count === 0) {
     const insertCat = db.prepare('INSERT OR IGNORE INTO categories (name) VALUES (?)');
@@ -48,10 +62,11 @@ function initTables(db: DatabaseSync) {
     }
   }
 
-  // Transactions Table
+  // ─── Transactions Table ──────────────────────────────────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS transactions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT,
       amount REAL NOT NULL CHECK(amount > 0),
       category TEXT NOT NULL,
       description TEXT NOT NULL,
@@ -60,32 +75,29 @@ function initTables(db: DatabaseSync) {
       payment_method TEXT DEFAULT 'UPI',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
-    CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category);
-    CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type);
   `);
+  addColumnIfMissing(db, 'transactions', 'user_id', 'TEXT');
+  addColumnIfMissing(db, 'transactions', 'payment_method', "TEXT DEFAULT 'UPI'");
 
-  // Migration check: Add payment_method column if existing database table lacks it
-  try {
-    const tableInfo = db.prepare("PRAGMA table_info(transactions)").all() as Array<{ name: string }>;
-    const hasPaymentMethod = tableInfo.some((col) => col.name === 'payment_method');
-    if (!hasPaymentMethod) {
-      db.exec("ALTER TABLE transactions ADD COLUMN payment_method TEXT DEFAULT 'UPI';");
-    }
-  } catch (err) {
-    // Ignore migration error if table created fresh
-  }
+  // Indexes (safe to run individually)
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id);'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category);'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type);'); } catch (_) {}
 
-  // Budgets Table
+  // ─── Budgets Table ───────────────────────────────────────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS budgets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT,
       category TEXT NOT NULL,
       amount REAL NOT NULL CHECK(amount >= 0),
       month TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(category, month)
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE INDEX IF NOT EXISTS idx_budgets_month ON budgets(month);
   `);
+  addColumnIfMissing(db, 'budgets', 'user_id', 'TEXT');
+
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_budgets_user_id ON budgets(user_id);'); } catch (_) {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_budgets_month ON budgets(month);'); } catch (_) {}
 }

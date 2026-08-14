@@ -1,15 +1,16 @@
 import { getDb } from './db';
 
-export function seedDemoData() {
+export function seedDemoData(userId: string) {
+  if (!userId) throw new Error('User ID is required for seeding');
   const db = getDb();
 
-  // Clear existing records to ensure a fresh demo dataset
-  db.exec('DELETE FROM transactions;');
-  db.exec('DELETE FROM budgets;');
+  // Clear existing records for THIS USER ONLY
+  db.prepare('DELETE FROM transactions WHERE user_id = ?').run(userId);
+  db.prepare('DELETE FROM budgets WHERE user_id = ?').run(userId);
 
   const currentYearMonth = new Date().toISOString().slice(0, 7); // e.g., "2026-08"
 
-  // 1. Seed Realistic Category Budgets for the current month (in ₹ INR)
+  // 1. Seed Realistic Category Budgets for the current month (in ₹ INR) for this user
   const sampleBudgets = [
     { category: '🍛 Food & Dining', amount: 12000 },
     { category: '🛒 Groceries', amount: 15000 },
@@ -25,13 +26,12 @@ export function seedDemoData() {
   ];
 
   const insertBudget = db.prepare(`
-    INSERT INTO budgets (category, amount, month)
-    VALUES (?, ?, ?)
-    ON CONFLICT(category, month) DO UPDATE SET amount = excluded.amount
+    INSERT INTO budgets (category, amount, month, user_id)
+    VALUES (?, ?, ?, ?)
   `);
 
   for (const b of sampleBudgets) {
-    insertBudget.run(b.category, b.amount, currentYearMonth);
+    insertBudget.run(b.category, b.amount, currentYearMonth, userId);
   }
 
   // 2. Generate 50+ Realistic Indian Transactions across dates, amounts, categories, and payment methods
@@ -119,19 +119,20 @@ export function seedDemoData() {
   ];
 
   const insertTx = db.prepare(`
-    INSERT INTO transactions (amount, category, description, date, type, payment_method)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO transactions (amount, category, description, date, type, payment_method, user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
 
   db.exec('BEGIN TRANSACTION;');
   for (const tx of rawTransactions) {
-    insertTx.run(tx.amount, tx.category, tx.description, tx.date, tx.type, tx.payment_method);
+    insertTx.run(tx.amount, tx.category, tx.description, tx.date, tx.type, tx.payment_method, userId);
   }
   db.exec('COMMIT;');
 
   return {
     success: true,
-    message: `Database successfully seeded with ${rawTransactions.length} realistic Indian transaction records!`,
+    message: `Database successfully seeded with ${rawTransactions.length} realistic Indian transaction records for your account!`,
     count: rawTransactions.length,
   };
 }
+

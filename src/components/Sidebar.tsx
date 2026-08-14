@@ -28,7 +28,17 @@ export default function Sidebar() {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  if (
+    pathname === '/login' ||
+    pathname === '/signup' ||
+    pathname?.startsWith('/login/') ||
+    pathname?.startsWith('/signup/')
+  ) {
+    return null;
+  }
+
   return (
+
     <>
       {/* Mobile Top Header */}
       <div className="md:hidden sticky top-0 z-40 bg-white border-b border-[#E8E4DF] px-4 py-3 flex items-center justify-between shadow-subtle">
