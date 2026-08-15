@@ -1,25 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateAICards, processChatbotQuery } from '@/lib/aiEngine';
 import { TimePeriod, ChatMessage } from '@/types';
-import { getAuthenticatedUser } from '@/lib/supabase-server';
+import { createClient } from '@/lib/supabase-server';
 
 export async function POST(request: NextRequest) {
   try {
-    const user = await getAuthenticatedUser();
-    if (!user) {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const body = await request.json();
-
     const { mode, period, prompt, history } = body;
-
     const selectedPeriod = (period || 'monthly') as TimePeriod;
 
     if (mode === 'chat') {
       const userMessage = prompt && typeof prompt === 'string' ? prompt.trim() : 'Summary of my spending';
       const chatHistory: ChatMessage[] = Array.isArray(history) ? history : [];
-      const botResponse = await processChatbotQuery(userMessage, chatHistory, user.id, selectedPeriod);
+      const botResponse = await processChatbotQuery(userMessage, chatHistory, supabase, user.id, selectedPeriod);
 
       return NextResponse.json({
         reply: botResponse,
@@ -27,8 +30,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Default mode: Generate 6 Dynamic AI Cards
-    const cards = await generateAICards(user.id, selectedPeriod);
-
+    const cards = await generateAICards(supabase, user.id, selectedPeriod);
 
     return NextResponse.json({
       cards,

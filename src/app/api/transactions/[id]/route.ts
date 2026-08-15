@@ -1,25 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
 import { PAYMENT_METHODS } from '@/lib/constants';
-import { getAuthenticatedUser } from '@/lib/supabase-server';
+import { createClient } from '@/lib/supabase-server';
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const user = await getAuthenticatedUser();
-    if (!user) {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { id } = await params;
-    const db = getDb();
-    const transaction = db
-      .prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?')
-      .get(id, user.id);
+    const { data: transaction, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .maybeSingle();
 
-    if (!transaction) {
+    if (error || !transaction) {
       return NextResponse.json({ error: 'Transaction not found' }, { status: 404 });
     }
 
@@ -37,8 +43,13 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const user = await getAuthenticatedUser();
-    if (!user) {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -67,22 +78,24 @@ export async function PUT(
 
     const method = PAYMENT_METHODS.includes(payment_method) ? payment_method : 'UPI';
 
-    const db = getDb();
-    const stmt = db.prepare(`
-      UPDATE transactions
-      SET amount = ?, category = ?, description = ?, date = ?, type = ?, payment_method = ?
-      WHERE id = ? AND user_id = ?
-    `);
+    const { data: updatedTx, error } = await supabase
+      .from('transactions')
+      .update({
+        amount,
+        category: category.trim(),
+        description: description.trim(),
+        date,
+        type,
+        payment_method: method,
+      })
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .select()
+      .maybeSingle();
 
-    const result = stmt.run(amount, category.trim(), description.trim(), date, type, method, id, user.id);
-
-    if (result.changes === 0) {
+    if (error || !updatedTx) {
       return NextResponse.json({ error: 'Transaction not found' }, { status: 404 });
     }
-
-    const updatedTx = db
-      .prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?')
-      .get(id, user.id);
 
     return NextResponse.json({ transaction: updatedTx, success: true });
   } catch (error: any) {
@@ -98,16 +111,24 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const user = await getAuthenticatedUser();
-    if (!user) {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { id } = await params;
-    const db = getDb();
-    const result = db.prepare('DELETE FROM transactions WHERE id = ? AND user_id = ?').run(id, user.id);
+    const { error, count } = await supabase
+      .from('transactions')
+      .delete({ count: 'exact' })
+      .eq('id', id)
+      .eq('user_id', user.id);
 
-    if (result.changes === 0) {
+    if (error || count === 0) {
       return NextResponse.json({ error: 'Transaction not found' }, { status: 404 });
     }
 
@@ -119,5 +140,3 @@ export async function DELETE(
     );
   }
 }
-
-

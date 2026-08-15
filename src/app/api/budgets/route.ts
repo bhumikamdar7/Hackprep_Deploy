@@ -1,51 +1,61 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
-import { getAuthenticatedUser } from '@/lib/supabase-server';
+import { createClient } from '@/lib/supabase-server';
 
 export async function GET(request: NextRequest) {
   try {
-    const user = await getAuthenticatedUser();
-    if (!user) {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { searchParams } = new URL(request.url);
     const monthParam = searchParams.get('month') || new Date().toISOString().slice(0, 7);
 
-    const db = getDb();
-    
-    // Select budget target + calculate current actual month spending for each category
-    const budgets = db.prepare(`
-      SELECT 
-        b.id,
-        b.category,
-        b.amount as budgetAmount,
-        b.month,
-        COALESCE(SUM(t.amount), 0) as spentAmount
-      FROM budgets b
-      LEFT JOIN transactions t 
-        ON b.category = t.category 
-        AND t.user_id = b.user_id
-        AND t.type = 'expense'
-        AND strftime('%Y-%m', t.date) = b.month
-      WHERE b.user_id = ? AND b.month = ?
-      GROUP BY b.id, b.category, b.amount, b.month
-      ORDER BY b.category ASC
-    `).all(user.id, monthParam) as Array<{
-      id: number;
-      category: string;
-      budgetAmount: number;
-      month: string;
-      spentAmount: number;
-    }>;
+    // Fetch user budgets for the month
+    const { data: budgets, error: bError } = await supabase
+      .from('budgets')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('month', monthParam)
+      .order('category', { ascending: true });
 
-    const progress = budgets.map((b) => {
-      const percentage = b.budgetAmount > 0 ? Math.round((b.spentAmount / b.budgetAmount) * 100) : 0;
+    if (bError) throw new Error(bError.message);
+
+    // Fetch user transactions for the month to calculate spent amount
+    const { data: transactions, error: tError } = await supabase
+      .from('transactions')
+      .select('category, amount, type, date')
+      .eq('user_id', user.id)
+      .eq('type', 'expense');
+
+    if (tError) throw new Error(tError.message);
+
+    const monthTransactions = (transactions || []).filter(
+      (t) => String(t.date).slice(0, 7) === monthParam
+    );
+
+    const progress = (budgets || []).map((b) => {
+      const budgetAmount = Number(b.amount);
+      const spentAmount = monthTransactions
+        .filter((t) => t.category === b.category)
+        .reduce((sum, t) => sum + Number(t.amount), 0);
+
+      const percentage = budgetAmount > 0 ? Math.round((spentAmount / budgetAmount) * 100) : 0;
       return {
-        ...b,
+        id: b.id,
+        category: b.category,
+        budgetAmount,
+        amount: budgetAmount,
+        month: b.month,
+        spentAmount,
         percentage,
-        remaining: Math.max(0, b.budgetAmount - b.spentAmount),
-        isOverBudget: b.spentAmount > b.budgetAmount,
+        remaining: Math.max(0, budgetAmount - spentAmount),
+        isOverBudget: spentAmount > budgetAmount,
       };
     });
 
@@ -60,8 +70,13 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const user = await getAuthenticatedUser();
-    if (!user) {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -75,17 +90,29 @@ export async function POST(request: NextRequest) {
     }
 
     const monthStr = month || new Date().toISOString().slice(0, 7);
-    const db = getDb();
+    const trimmedCat = category.trim();
 
-    // Upsert budget for category + month + user_id
-    const existing = db
-      .prepare('SELECT id FROM budgets WHERE user_id = ? AND category = ? AND month = ?')
-      .get(user.id, category.trim(), monthStr) as { id: number } | undefined;
+    // Check existing
+    const { data: existing } = await supabase
+      .from('budgets')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('category', trimmedCat)
+      .eq('month', monthStr)
+      .maybeSingle();
 
     if (existing) {
-      db.prepare('UPDATE budgets SET amount = ? WHERE id = ? AND user_id = ?').run(amount, existing.id, user.id);
+      const { error } = await supabase
+        .from('budgets')
+        .update({ amount })
+        .eq('id', existing.id)
+        .eq('user_id', user.id);
+      if (error) throw new Error(error.message);
     } else {
-      db.prepare('INSERT INTO budgets (user_id, category, amount, month) VALUES (?, ?, ?, ?)').run(user.id, category.trim(), amount, monthStr);
+      const { error } = await supabase
+        .from('budgets')
+        .insert({ user_id: user.id, category: trimmedCat, amount, month: monthStr });
+      if (error) throw new Error(error.message);
     }
 
     return NextResponse.json({ success: true, message: 'Budget set successfully' });
@@ -99,8 +126,13 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const user = await getAuthenticatedUser();
-    if (!user) {
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -111,10 +143,13 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Budget ID is required' }, { status: 400 });
     }
 
-    const db = getDb();
-    const result = db.prepare('DELETE FROM budgets WHERE id = ? AND user_id = ?').run(id, user.id);
+    const { error, count } = await supabase
+      .from('budgets')
+      .delete({ count: 'exact' })
+      .eq('id', id)
+      .eq('user_id', user.id);
 
-    if (result.changes === 0) {
+    if (error || count === 0) {
       return NextResponse.json({ error: 'Budget not found' }, { status: 404 });
     }
 
@@ -126,5 +161,3 @@ export async function DELETE(request: NextRequest) {
     );
   }
 }
-
-

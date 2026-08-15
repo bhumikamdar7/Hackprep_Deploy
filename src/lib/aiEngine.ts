@@ -1,115 +1,165 @@
-import { getDb } from './db';
-import { AIResponse, TimePeriod, AICardInsights, ChatMessage } from '@/types';
+import { SupabaseClient } from '@supabase/supabase-js';
+import { TimePeriod, AICardInsights, ChatMessage } from '@/types';
 import { formatINR } from './formatters';
-import { getPeriodFilter } from './period';
 
-// Helper to gather complete verified SQLite financial context
-export function getFinancialContext(userId: string, period: TimePeriod = 'monthly') {
-  const db = getDb();
-  const periodFilter = getPeriodFilter(period);
+// Helper to gather complete verified Supabase PostgreSQL financial context
+export async function getFinancialContext(
+  supabase: SupabaseClient,
+  userId: string,
+  period: TimePeriod = 'monthly'
+) {
   const currentMonth = new Date().toISOString().slice(0, 7);
 
-  // 1. Total Income
-  const incRow = db
-    .prepare(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND type = 'income' AND ${periodFilter.whereClause}`)
-    .get(userId) as { total: number };
-  const totalIncome = incRow?.total || 0;
+  // Fetch all transactions for this user from Supabase
+  const { data: allTransactionsData } = await supabase
+    .from('transactions')
+    .select('*')
+    .eq('user_id', userId)
+    .order('date', { ascending: false });
 
-  // 2. Total Expenses & Count
-  const expRow = db
-    .prepare(`SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count FROM transactions WHERE user_id = ? AND type = 'expense' AND ${periodFilter.whereClause}`)
-    .get(userId) as { total: number; count: number };
-  const totalExpenses = expRow?.total || 0;
-  const txCount = expRow?.count || 0;
+  const allTransactions = allTransactionsData || [];
 
-  // 3. Category Breakdown
-  const catRows = db
-    .prepare(`
-      SELECT category, SUM(amount) as total, COUNT(*) as count
-      FROM transactions
-      WHERE user_id = ? AND type = 'expense' AND ${periodFilter.whereClause}
-      GROUP BY category
-      ORDER BY total DESC
-    `)
-    .all(userId) as Array<{ category: string; total: number; count: number }>;
+  // Filter transactions by period
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  let startDateStr = currentMonth + '-01';
 
-  const categoryBreakdown = catRows.map((c) => ({
-    category: c.category,
-    amount: c.total,
-    percentage: totalExpenses > 0 ? Math.round((c.total / totalExpenses) * 100) : 0,
-    count: c.count,
-  }));
+  if (period === 'daily') {
+    startDateStr = todayStr;
+  } else if (period === 'weekly') {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 6);
+    startDateStr = d.toISOString().slice(0, 10);
+  } else if (period === 'yearly') {
+    startDateStr = `${now.getFullYear()}-01-01`;
+  }
 
-  // 4. High-value transactions audit (> ₹3,000 or top 5)
-  const topTxns = db
-    .prepare(`
-      SELECT id, amount, category, description, date, payment_method
-      FROM transactions
-      WHERE user_id = ? AND type = 'expense' AND ${periodFilter.whereClause}
-      ORDER BY amount DESC
-      LIMIT 5
-    `)
-    .all(userId) as Array<{ id: number; amount: number; category: string; description: string; date: string; payment_method: string }>;
+  const periodLabelMap: Record<TimePeriod, string> = {
+    daily: 'Today',
+    weekly: 'Past 7 Days',
+    monthly: 'This Month',
+    yearly: 'This Year',
+  };
 
-  // 5. Active Budget Progress
-  const budgetRows = db
-    .prepare(`
-      SELECT 
-        b.category,
-        b.amount as budgetAmount,
-        COALESCE(SUM(t.amount), 0) as spentAmount
-      FROM budgets b
-      LEFT JOIN transactions t 
-        ON b.category = t.category 
-        AND t.user_id = b.user_id
-        AND t.type = 'expense'
-        AND strftime('%Y-%m', t.date) = b.month
-      WHERE b.user_id = ? AND b.month = ?
-      GROUP BY b.id, b.category, b.amount
-    `)
-    .all(userId, currentMonth) as Array<{ category: string; budgetAmount: number; spentAmount: number }>;
+  const periodTxns = allTransactions.filter(
+    (tx) => tx.date >= startDateStr && tx.date <= todayStr
+  );
 
-  const budgets = budgetRows.map((b) => ({
-    category: b.category,
-    budgetAmount: b.budgetAmount,
-    spentAmount: b.spentAmount,
-    isOverBudget: b.spentAmount > b.budgetAmount,
-    percentage: b.budgetAmount > 0 ? Math.round((b.spentAmount / b.budgetAmount) * 100) : 0,
-  }));
+  const totalIncome = periodTxns
+    .filter((tx) => tx.type === 'income')
+    .reduce((sum, tx) => sum + Number(tx.amount), 0);
 
-  // 6. Monthly Trend Comparison
-  const trendRows = db
-    .prepare(`
-      SELECT 
-        strftime('%Y-%m', date) as month,
-        SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income,
-        SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expense
-      FROM transactions
-      WHERE user_id = ?
-      GROUP BY strftime('%Y-%m', date)
-      ORDER BY month DESC
-      LIMIT 3
-    `)
-    .all(userId) as Array<{ month: string; income: number; expense: number }>;
+  const expenseTxns = periodTxns.filter((tx) => tx.type === 'expense');
+  const totalExpenses = expenseTxns.reduce((sum, tx) => sum + Number(tx.amount), 0);
+  const txCount = periodTxns.length;
+
+  // Category Breakdown
+  const catMap = new Map<string, { total: number; count: number }>();
+  for (const tx of expenseTxns) {
+    const existing = catMap.get(tx.category) || { total: 0, count: 0 };
+    existing.total += Number(tx.amount);
+    existing.count += 1;
+    catMap.set(tx.category, existing);
+  }
+
+  const categoryBreakdown = Array.from(catMap.entries())
+    .map(([category, data]) => ({
+      category,
+      amount: data.total,
+      percentage: totalExpenses > 0 ? Math.round((data.total / totalExpenses) * 100) : 0,
+      count: data.count,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+
+  // Top transactions
+  const topTxns = [...expenseTxns]
+    .sort((a, b) => Number(b.amount) - Number(a.amount))
+    .slice(0, 5)
+    .map((tx) => ({
+      id: tx.id,
+      amount: Number(tx.amount),
+      category: tx.category,
+      description: tx.description,
+      date: tx.date,
+      payment_method: tx.payment_method,
+    }));
+
+  // Fetch Budgets from Supabase
+  const { data: budgetRowsData } = await supabase
+    .from('budgets')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('month', currentMonth);
+
+  const budgetRows = budgetRowsData || [];
+
+  const budgets = budgetRows.map((b) => {
+    const spentAmount = allTransactions
+      .filter(
+        (tx) =>
+          tx.type === 'expense' &&
+          tx.category === b.category &&
+          String(tx.date).slice(0, 7) === b.month
+      )
+      .reduce((sum, tx) => sum + Number(tx.amount), 0);
+
+    const budgetAmount = Number(b.amount);
+    return {
+      category: b.category,
+      budgetAmount,
+      spentAmount,
+      isOverBudget: spentAmount > budgetAmount,
+      percentage: budgetAmount > 0 ? Math.round((spentAmount / budgetAmount) * 100) : 0,
+    };
+  });
+
+  // Monthly trends
+  const trendMap = new Map<string, { income: number; expense: number }>();
+  for (const tx of allTransactions) {
+    const month = String(tx.date).slice(0, 7);
+    const existing = trendMap.get(month) || { income: 0, expense: 0 };
+    if (tx.type === 'income') {
+      existing.income += Number(tx.amount);
+    } else {
+      existing.expense += Number(tx.amount);
+    }
+    trendMap.set(month, existing);
+  }
+
+  const trends = Array.from(trendMap.entries())
+    .sort(([a], [b]) => b.localeCompare(a))
+    .slice(0, 3)
+    .map(([month, val]) => ({
+      month,
+      income: val.income,
+      expense: val.expense,
+    }));
 
   return {
-    periodLabel: periodFilter.label,
+    periodLabel: periodLabelMap[period] || 'This Month',
     periodKey: period,
     totalIncome,
     totalExpenses,
     netCashflow: totalIncome - totalExpenses,
-    savingsRate: totalIncome > 0 ? Math.max(0, Math.round(((totalIncome - totalExpenses) / totalIncome) * 100)) : 0,
+    savingsRate:
+      totalIncome > 0
+        ? Math.max(0, Math.round(((totalIncome - totalExpenses) / totalIncome) * 100))
+        : 0,
     txCount,
     categoryBreakdown,
     topTxns,
     budgets,
-    trends: trendRows,
+    trends,
   };
 }
 
 // Generate the 6 Dynamic Cards via LLM
-export async function generateAICards(userId: string, period: TimePeriod = 'monthly'): Promise<AICardInsights> {
-  const ctx = getFinancialContext(userId, period);
+export async function generateAICards(
+  supabase: SupabaseClient,
+  userId: string,
+  period: TimePeriod = 'monthly'
+): Promise<AICardInsights> {
+  const ctx = await getFinancialContext(supabase, userId, period);
 
   const fallbackCards: AICardInsights = {
     spendingSummary: `For ${ctx.periodLabel}, total expenses stand at **${formatINR(ctx.totalExpenses)}** across ${ctx.txCount} transactions against recorded income of **${formatINR(ctx.totalIncome)}**. Net balance: **${formatINR(ctx.netCashflow)}**.`,
@@ -118,23 +168,25 @@ export async function generateAICards(userId: string, period: TimePeriod = 'mont
       amount: c.amount,
       percentage: c.percentage,
     })),
-    spendingTrends: ctx.categoryBreakdown.length > 0
-      ? `Your primary expenditure driver is **${ctx.categoryBreakdown[0].category}** at ${formatINR(ctx.categoryBreakdown[0].amount)} (${ctx.categoryBreakdown[0].percentage}% of total spend).`
-      : "No spending trends detected for this period.",
-    unusualSpending: ctx.topTxns.length > 0
-      ? `Highest transaction logged is **${ctx.topTxns[0].description}** for **${formatINR(ctx.topTxns[0].amount)}** via ${ctx.topTxns[0].payment_method}.`
-      : "No high-value unusual transactions logged.",
+    spendingTrends:
+      ctx.categoryBreakdown.length > 0
+        ? `Your primary expenditure driver is **${ctx.categoryBreakdown[0].category}** at ${formatINR(ctx.categoryBreakdown[0].amount)} (${ctx.categoryBreakdown[0].percentage}% of total spend).`
+        : 'No spending trends detected for this period.',
+    unusualSpending:
+      ctx.topTxns.length > 0
+        ? `Highest transaction logged is **${ctx.topTxns[0].description}** for **${formatINR(ctx.topTxns[0].amount)}** via ${ctx.topTxns[0].payment_method}.`
+        : 'No high-value unusual transactions logged.',
     budgetHealth: ctx.budgets.some((b) => b.isOverBudget)
       ? `🚨 Attention needed: ${ctx.budgets.filter((b) => b.isOverBudget).length} category/categories are over budget (${ctx.budgets.filter((b) => b.isOverBudget).map((b) => b.category).join(', ')}).`
       : ctx.budgets.length > 0
       ? `✅ All ${ctx.budgets.length} category budgets are currently within limits.`
-      : "No active monthly budget caps configured yet.",
+      : 'No active monthly budget caps configured yet.',
     recommendations: [
       ctx.categoryBreakdown.length > 0
         ? `Target **${ctx.categoryBreakdown[0].category}** for a 15% reduction to save ${formatINR(ctx.categoryBreakdown[0].amount * 0.15)}.`
-        : "Log more transactions to receive tailored savings advice.",
-      "Maintain a 20% minimum savings buffer from monthly income.",
-      "Audit high-frequency digital transfers & recurring UPI subscriptions.",
+        : 'Log more transactions to receive tailored savings advice.',
+      'Maintain a 20% minimum savings buffer from monthly income.',
+      'Audit high-frequency digital transfers & recurring UPI subscriptions.',
     ],
   };
 
@@ -144,9 +196,9 @@ export async function generateAICards(userId: string, period: TimePeriod = 'mont
   }
 
   try {
-    const systemPrompt = `You are SpendSense AI, an expert Indian financial advisor. Analyze the user's verified SQLite database facts below and return a JSON object with insights for EXACTLY 6 sections.
+    const systemPrompt = `You are SpendSense AI, an expert Indian financial advisor. Analyze the user's verified financial facts below and return a JSON object with insights for EXACTLY 6 sections.
 
-VERIFIED SQLITE FINANCIAL FACTS:
+VERIFIED FINANCIAL FACTS:
 - Time Period: ${ctx.periodLabel}
 - Total Income: ${formatINR(ctx.totalIncome)}
 - Total Expenses: ${formatINR(ctx.totalExpenses)}
@@ -160,7 +212,7 @@ VERIFIED SQLITE FINANCIAL FACTS:
 
 CRITICAL INSTRUCTIONS:
 - Use Indian Rupee (₹ / INR) formatting.
-- Do NOT invent totals or change financial numbers. Rely strictly on the provided SQL facts.
+- Do NOT invent totals or change financial numbers. Rely strictly on the provided facts.
 - Return ONLY valid JSON matching this exact structure:
 {
   "spending_summary": "1-2 sentence summary of income, expense, and net balance in ₹",
@@ -201,13 +253,14 @@ CRITICAL INSTRUCTIONS:
 
     return {
       spendingSummary: parsed.spending_summary || fallbackCards.spendingSummary,
-      topCategories: Array.isArray(parsed.top_categories) && parsed.top_categories.length > 0
-        ? parsed.top_categories.map((c: any) => ({
-            category: c.category || c.name || 'Expense',
-            amount: Number(c.amount) || 0,
-            percentage: Number(c.percentage) || 0,
-          }))
-        : fallbackCards.topCategories,
+      topCategories:
+        Array.isArray(parsed.top_categories) && parsed.top_categories.length > 0
+          ? parsed.top_categories.map((c: any) => ({
+              category: c.category || c.name || 'Expense',
+              amount: Number(c.amount) || 0,
+              percentage: Number(c.percentage) || 0,
+            }))
+          : fallbackCards.topCategories,
       spendingTrends: parsed.spending_trends || fallbackCards.spendingTrends,
       unusualSpending: parsed.unusual_spending || fallbackCards.unusualSpending,
       budgetHealth: parsed.budget_health || fallbackCards.budgetHealth,
@@ -225,16 +278,16 @@ CRITICAL INSTRUCTIONS:
 export async function processChatbotQuery(
   userQuery: string,
   history: ChatMessage[],
+  supabase: SupabaseClient,
   userId: string,
   period: TimePeriod = 'monthly'
 ): Promise<string> {
-  const ctx = getFinancialContext(userId, period);
-
+  const ctx = await getFinancialContext(supabase, userId, period);
 
   const apiKey = process.env.AI_API_KEY;
 
   const contextPrompt = `You are SpendSense AI, an intelligent, helpful Indian personal finance assistant.
-Answer the user's financial question concisely, accurately, and naturally based ONLY on their verified SQLite database records below. Always format amounts in Indian Rupees (₹ / INR).
+Answer the user's financial question concisely, accurately, and naturally based ONLY on their verified database records below. Always format amounts in Indian Rupees (₹ / INR).
 
 VERIFIED DATABASE FACTS (${ctx.periodLabel}):
 - Income: ${formatINR(ctx.totalIncome)}
